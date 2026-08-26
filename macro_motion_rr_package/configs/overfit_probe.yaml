@@ -1,0 +1,77 @@
+# Capacity probe: can the model fit a couple of clips at all?
+#
+# NOT a training config -- generalisation is not the question here. But it now
+# runs at production lr, because the previous 10x lr was itself the reason the
+# probe kept failing. Measured over three 60-epoch runs with everything else
+# identical (loss 93.7 is the constant-prediction floor, pred_std 0 means the
+# head is emitting one number for both clips):
+#
+#     lr 2e-3, bs 1 (old):  epoch 60 -> loss 93.80  pred_std 0.10   never escapes
+#     lr 2e-4, bs 1:        epoch 60 -> loss 41.33  pred_std 18.46  escapes ~ep 22
+#     lr 2e-4, bs 2:        epoch 60 -> loss 43.12  pred_std 17.60  escapes ~ep 5
+#
+# The old header argued the high lr was safe because the probe "only ever asks
+# whether the loss CAN be driven down". It was exactly backwards: at 2e-3 the
+# loss cannot be driven down at all. batch_size 2 puts both clips in one step so
+# their opposing gradients sum before the update instead of alternating; that
+# only speeds the escape up, it is the lr that decides whether it happens.
+#
+# Data path and model shape match default.yaml (512x512, frame_stride 3, frozen
+# ResNet-50), so a pass here means the real pipeline is sound.
+#
+# 60 epochs x 2 train clips at batch_size 1 = 120 optimizer steps.
+#
+# The earlier "gradients cancelling" diagnosis was right about the symptom and
+# wrong about the cure: more steps cannot help, because the model was emitting a
+# constant and for a constant prediction the loss over these two clips (labels
+# 24.6 and 89.9 bpm) varies only 2.4% across c in [45, 80]. The constant itself
+# came from the frozen ResNet's BatchNorm running in train mode; both that and
+# the loss settings below are now fixed. Pass/fail here is train_pred_std > 0
+# and frame_Pearson_r > 0, not the loss value.
+seed: 42
+
+data:
+  input_size: 512
+  clip_frames: 600
+  raw_fps: 30.0
+  normalize: true
+  frame_stride: 3
+
+model:
+  d_model: 512
+  n_heads: 8
+  depth: 6
+  dropout: 0.1
+  ff_mult: 4
+  max_len: 700
+  temporal_downsample: 1      # frame_stride already decimates on load
+  use_pretrained_resnet: true
+  freeze_resnet_until: ""
+  include_temp_path: false
+  use_domain_token: false
+  unet_base: 32
+  rr_init_bias: auto          # bias only; head weight keeps its default init
+
+train:
+  require_cuda: true
+  epochs: 200            # 60 was not enough to converge at production lr
+  batch_size: 2          # both clips in one step: opposing gradients sum, not alternate
+  lr: 0.0002             # production lr; 10x this pins the model at a constant, see header
+  weight_decay: 0.01
+  num_workers: 2              # Orin unified memory is shared with the GPU
+  amp: true
+  grad_clip: 100.0            # was 1.0, against observed norms of 150-350: every
+                              # step became a fixed-size move in the gradient
+                              # direction, discarding all loss-magnitude info.
+  rr_loss: huber
+  huber_delta: 3.0            # was 12.0. With errors of 30-65 bpm the quadratic
+                              # region never engaged, so this was L1 x 12 -- the
+                              # 12x is what inflated the loss into the hundreds
+                              # where the uncertainty escape hatch paid off.
+  rr_smooth_w: 0.0            # was 0.05. mean|RR_t - RR_t-1| is exactly 0 for a
+                              # constant prediction, i.e. a standing reward for
+                              # the collapse this probe exists to detect.
+  use_uncertainty: false      # single active head: nothing to balance, see losses.py
+  temp_loss_weight_blanket: 0.3
+  temp_loss_weight_exposed: 1.0
+  save_every: 999             # skip periodic 175 MB snapshots; best.pt still written

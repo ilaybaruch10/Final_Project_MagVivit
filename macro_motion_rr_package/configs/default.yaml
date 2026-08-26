@@ -5,6 +5,11 @@ data:
   clip_frames: 600
   raw_fps: 30.0
   normalize: true
+  # Decimate at load time instead of inside the model: only every 3rd PNG is
+  # decoded and resized. 600 -> 200 frames/clip, same tensors the model saw
+  # before, but ~3x less I/O and 1.76 -> 0.59 GiB per clip. Requires
+  # model.temporal_downsample: 1 so the clip is not decimated twice.
+  frame_stride: 3
 
 model:
   d_model: 512
@@ -13,7 +18,12 @@ model:
   dropout: 0.1
   ff_mult: 4
   max_len: 700
-  temporal_downsample: 3
+  # 1 because data.frame_stride: 3 already decimates on load.
+  temporal_downsample: 1
+  # Start the RR head at the training-set mean instead of ~0, so gradient steps
+  # go into learning structure rather than closing a ~55 bpm offset. 'auto'
+  # computes it from the train split's supervised frames; a number pins it.
+  rr_init_bias: auto
   use_pretrained_resnet: true      # frozen built-in PyTorch ResNet-50
   freeze_resnet_until: ""        # ignored; ResNet is fully frozen
   include_temp_path: false
@@ -21,6 +31,10 @@ model:
   unet_base: 32
 
 train:
+  # Refuse to start without a GPU. Nothing here is viable on CPU, and a silent
+  # fallback looks like a hang rather than an error. Override per-run with
+  # --allow-cpu if you genuinely need it.
+  require_cuda: true
   epochs: 50
   batch_size: 2
   lr: 0.0002
@@ -29,7 +43,10 @@ train:
   amp: true
   grad_clip: 1.0
   rr_loss: huber
-  huber_delta: 2.0
+  # RR is regressed in raw bpm (~13-110 here), so delta must be large enough that
+  # early errors land in Huber's quadratic regime. At delta=2.0 the gradient is
+  # pinned at a constant +/-2.0 for any error above 2 bpm, and the head crawls.
+  huber_delta: 12.0
   rr_smooth_w: 0.05
   temp_loss_weight_blanket: 0.3
   temp_loss_weight_exposed: 1.0

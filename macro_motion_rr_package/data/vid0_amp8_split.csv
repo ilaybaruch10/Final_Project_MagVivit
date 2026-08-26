@@ -1,0 +1,4 @@
+clip_path,rr_path,subject_id,cond,split
+/mnt/pag_disk/deepmag_work/output/Patient_0_Record_0_vid_0_frames_amp8_no,/mnt/pag_disk/pre_magnification/Patient_0/Record_0/vid_0/signs/rr.npy,Patient_0,exposed,train
+/mnt/pag_disk/deepmag_work/output/Patient_0_Record_0_vid_0_frames_amp8_no,/mnt/pag_disk/pre_magnification/Patient_0/Record_0/vid_0/signs/rr.npy,Patient_0,exposed,val
+/mnt/pag_disk/deepmag_work/output/Patient_0_Record_0_vid_0_frames_amp8_no,/mnt/pag_disk/pre_magnification/Patient_0/Record_0/vid_0/signs/rr.npy,Patient_0,exposed,test
