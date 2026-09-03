@@ -1,0 +1,47 @@
+# Fast pre-flight check. Same data path and model shape as default.yaml -- real
+# 512x512 input, frame_stride 3, frozen ResNet-50 -- so passing here means the
+# actual pipeline is sound. Only the schedule is shortened.
+#
+# batch_size 1 (not 2) is deliberate: with 2 train clips it doubles the number of
+# optimizer steps per epoch, and step count is what this check is limited by.
+#
+# Expect ~15 epochs in a few minutes. Watch frame_MAE fall.
+seed: 42
+
+data:
+  input_size: 512
+  clip_frames: 600
+  raw_fps: 30.0
+  normalize: true
+  frame_stride: 3
+
+model:
+  d_model: 512
+  n_heads: 8
+  depth: 6
+  dropout: 0.1
+  ff_mult: 4
+  max_len: 700
+  temporal_downsample: 1      # frame_stride already decimates on load
+  use_pretrained_resnet: true
+  freeze_resnet_until: ""
+  include_temp_path: false
+  use_domain_token: false
+  unet_base: 32
+  rr_init_bias: auto          # start the head at the train-set mean RR
+
+train:
+  require_cuda: true
+  epochs: 15
+  batch_size: 1
+  lr: 0.0002
+  weight_decay: 0.01
+  num_workers: 2              # unified memory is shared with the GPU on Orin
+  amp: true
+  grad_clip: 1.0
+  rr_loss: huber
+  huber_delta: 12.0
+  rr_smooth_w: 0.05
+  temp_loss_weight_blanket: 0.3
+  temp_loss_weight_exposed: 1.0
+  save_every: 999             # skip periodic 175 MB snapshots; best.pt still saved

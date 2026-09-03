@@ -1,0 +1,39 @@
+# "One real run" config: pretrained ResNet-50 backbone, a realistic-but-fast
+# setup to validate the whole pipeline before real data arrives.
+# Heavier than dryrun.yaml, lighter than default.yaml so it finishes on CPU.
+seed: 42
+
+data:
+  input_size: 128
+  clip_frames: 120
+  raw_fps: 30.0
+  normalize: true
+
+model:
+  d_model: 256
+  n_heads: 8
+  depth: 4
+  dropout: 0.1
+  ff_mult: 4
+  max_len: 128
+  temporal_downsample: 3
+  use_pretrained_resnet: true      # genuine frozen ImageNet ResNet-50 (cached)
+  freeze_resnet_until: ""
+  include_temp_path: false
+  use_domain_token: false
+  unet_base: 32
+
+train:
+  epochs: 5
+  batch_size: 2
+  lr: 0.0002
+  weight_decay: 0.01
+  num_workers: 0
+  amp: false
+  grad_clip: 1.0
+  rr_loss: huber
+  huber_delta: 2.0
+  rr_smooth_w: 0.05
+  temp_loss_weight_blanket: 0.3
+  temp_loss_weight_exposed: 1.0
+  save_every: 5

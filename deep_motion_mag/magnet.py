@@ -20,7 +20,7 @@ from preprocessor import preprocess_image, preproc_color
 from data_loader import read_and_decode_3frames
 
 # Change here if you use ffmpeg.
-DEFAULT_VIDEO_CONVERTER = 'avconv'
+DEFAULT_VIDEO_CONVERTER = 'ffmpeg'
 
 
 class MagNet3Frames(object):
@@ -411,9 +411,17 @@ class MagNet3Frames(object):
             # domain to proof this:
             filter_b = [fh - fl, fl - fh]
             filter_a = [-1.0 * (2.0 - fh - fl), (1.0 - fl) * (1.0 - fh)]
+        elif filter_type == 'butterLowpass':
+            # Low-pass Butterworth: passband is DC..fh (fl is ignored).
+            # Unlike the band-pass variants, this KEEPS the DC component in
+            # the amplified shape signal, so the static shape is magnified too.
+            filter_b, filter_a = butter(n_filter_tap, fh / nyq,
+                                        btype='lowpass')
+            filter_a = filter_a[1:]
         else:
             raise ValueError('Filter type must be either '
-                             '["fir", "butter", "differenceOfIIR"] got ' + \
+                             '["fir", "butter", "differenceOfIIR", '
+                             '"butterLowpass"] got ' + \
                              filter_type)
         head, tail = os.path.split(out_dir)
         tail = tail + '_fl{}_fh{}_fs{}_n{}_{}'.format(fl, fh, fs,

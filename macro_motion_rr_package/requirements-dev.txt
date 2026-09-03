@@ -1,0 +1,3 @@
+# Dev/test dependencies (not needed for training/eval).
+# Install with: pip install -r requirements-dev.txt
+pytest

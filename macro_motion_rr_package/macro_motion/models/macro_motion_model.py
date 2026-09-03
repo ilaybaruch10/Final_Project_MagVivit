@@ -9,15 +9,15 @@ class MacroMotionModel(nn.Module):
     def __init__(self, d_model=512, n_heads=8, depth=6, dropout=0.1, ff_mult=4,
                  max_len=700, temporal_downsample=3, pretrained_resnet=True,
                  freeze_resnet_until="", include_temp_path=False, unet_base=32,
-                 use_domain_token=False):
+                 use_domain_token=False, rr_init_bias=0.0):
         super().__init__()
         self.temporal_downsample = temporal_downsample
         self.include_temp_path = include_temp_path
-        self.rr_encoder = FrozenResNet50FrameEncoder(d_model)
+        self.rr_encoder = FrozenResNet50FrameEncoder(d_model, pretrained=pretrained_resnet)
 
         if include_temp_path:
             self.unet = UNetNIR2IR(in_ch=3, out_ch=1, base=unet_base)
-            self.temp_encoder = FaceAwareFrozenResNet50Encoder(d_model)
+            self.temp_encoder = FaceAwareFrozenResNet50Encoder(d_model, pretrained=pretrained_resnet)
             self.temp_head = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, 1))
         else:
             self.unet = None
@@ -26,6 +26,37 @@ class MacroMotionModel(nn.Module):
 
         self.transformer = SharedMacroTransformer(d_model, n_heads, depth, dropout, ff_mult, max_len, use_domain_token=use_domain_token)
         self.rr_head = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, 1))
+        if rr_init_bias:
+            # RR is regressed in raw bpm. With a default-initialised head the
+            # model starts near 0 and has to travel the whole ~55 bpm to the
+            # target, and AdamW normalises gradient magnitude so each step moves
+            # only ~lr regardless of how large the error is. Starting the head at
+            # the training mean spends those steps on structure, not on the offset.
+            #
+            # Only the bias is set. Zeroing the weight as well gives an exactly
+            # constant initial output, but then the feature path has to grow from
+            # zero and the head produces no variation for many steps -- keeping the
+            # default weight init leaves a live gradient path from the features.
+            nn.init.constant_(self.rr_head[-1].bias, float(rr_init_bias))
+
+    def train(self, mode: bool = True):
+        """Keep the frozen ResNet trunks in eval mode even under model.train().
+
+        `requires_grad=False` stops the weights moving but does nothing to
+        BatchNorm's running statistics, and nn.Module.train() recurses into every
+        submodule -- so the .eval() set at construction is undone on the first
+        epoch. In train mode BN normalises by the *current batch*, which here is
+        the frames of a single clip, so it subtracts each clip's own per-channel
+        mean. That is exactly where the between-clip RR signal lives: measured
+        over 14 clips it collapses between-clip feature variance 57x (0.00341 ->
+        0.00006) and drives a linear read-out to the mean-predictor baseline.
+        It also corrupts the pretrained running stats that eval() later relies on.
+        """
+        super().train(mode)
+        self.rr_encoder.backbone.eval()
+        if self.temp_encoder is not None:
+            self.temp_encoder.backbone.eval()
+        return self
 
     @staticmethod
     def nir_to_gray(x):

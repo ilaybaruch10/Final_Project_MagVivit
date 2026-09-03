@@ -21,7 +21,7 @@ class MacroMotionDataset(Dataset):
       3) rr_bpm: scalar, repeated across all frames
     """
     def __init__(self, metadata_csv, split="train", input_size=512,
-                 clip_frames=600, normalize=True, include_temp=False):
+                 clip_frames=600, normalize=True, include_temp=False, frame_stride=1):
         self.df = pd.read_csv(metadata_csv)
         self.df = self.df[self.df["split"] == split].reset_index(drop=True)
         if len(self.df) == 0:
@@ -30,6 +30,11 @@ class MacroMotionDataset(Dataset):
         self.clip_frames = clip_frames
         self.normalize = normalize
         self.include_temp = include_temp
+        # Decimate on load rather than inside the model, so discarded frames are
+        # never decoded or resized. clip_frames stays the raw window length;
+        # every tensor this dataset returns has length T_out.
+        self.frame_stride = max(1, int(frame_stride))
+        self.T_out = -(-clip_frames // self.frame_stride)  # ceil division
 
     def __len__(self):
         return len(self.df)
@@ -65,13 +70,33 @@ class MacroMotionDataset(Dataset):
 
         raise ValueError("Provide rr_path, rr_seq, or rr_bpm.")
 
+    def _load_rr_mask(self, row):
+        """Per-frame validity mask, 1 = supervise on this frame, 0 = ignore.
+
+        Absent column means every frame is valid, which keeps older metadata
+        CSVs working unchanged.
+        """
+        if "rr_mask_path" in row and pd.notna(row["rr_mask_path"]):
+            arr = np.load(str(row["rr_mask_path"]))
+            return (self._fix_seq_len(arr) > 0.5).float()
+        return torch.ones(self.clip_frames, dtype=torch.float32)
+
     def _fix_clip_len(self, x):
         T = x.shape[0]
-        if T == self.clip_frames:
+        if T == self.T_out:
             return x
-        if T > self.clip_frames:
-            return x[:self.clip_frames]
-        return torch.cat([x, x[-1:].repeat(self.clip_frames - T, 1, 1, 1)], dim=0)
+        if T > self.T_out:
+            return x[:self.T_out]
+        return torch.cat([x, x[-1:].repeat(self.T_out - T, 1, 1, 1)], dim=0)
+
+    def _stride_seq(self, y):
+        """Decimate a full-length (clip_frames) label/mask to T_out."""
+        if self.frame_stride == 1:
+            return y
+        y = y[::self.frame_stride][:self.T_out]
+        if y.numel() < self.T_out:
+            y = torch.cat([y, y[-1:].repeat(self.T_out - y.numel())], dim=0)
+        return y
 
     def _resize(self, x, mode="bilinear"):
         if mode == "nearest":
@@ -80,7 +105,7 @@ class MacroMotionDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        clip = load_clip(row["clip_path"])
+        clip = load_clip(row["clip_path"], stride=self.frame_stride)
         if clip.shape[1] < 3:
             clip = clip.repeat(1, 3, 1, 1)
         clip = clip[:, :3]
@@ -89,8 +114,12 @@ class MacroMotionDataset(Dataset):
         clip = self._fix_clip_len(clip)
         clip = self._resize(clip)
 
-        rr_seq = self._load_rr_seq(row)
-        rr_scalar = rr_seq.mean()
+        # Labels are stored at full frame rate, so decimate them with the same
+        # stride to stay aligned with the clip frames actually loaded.
+        rr_seq = self._stride_seq(self._load_rr_seq(row))
+        rr_mask = self._stride_seq(self._load_rr_mask(row))
+        # Clip-level scalar averages only the supervised frames.
+        rr_scalar = (rr_seq * rr_mask).sum() / rr_mask.sum().clamp_min(1.0)
 
         cond = str(row["cond"]).lower() if "cond" in row and pd.notna(row["cond"]) else "exposed"
         cond_id = torch.tensor(COND_TO_ID.get(cond, 0), dtype=torch.long)
@@ -98,9 +127,14 @@ class MacroMotionDataset(Dataset):
         sample = {
             "clip": clip,
             "rr_seq": rr_seq,
+            "rr_mask": rr_mask,
             "rr": rr_scalar,
             "cond_id": cond_id,
             "clip_path": str(row["clip_path"]),
+            # Spec sections 33/35: the evaluation CSVs are keyed on clip_id.
+            # Fall back to the path when older metadata has no such column.
+            "clip_id": (str(row["clip_id"]) if "clip_id" in row and pd.notna(row["clip_id"])
+                        else str(row["clip_path"])),
         }
 
         if self.include_temp:
@@ -109,9 +143,9 @@ class MacroMotionDataset(Dataset):
             sample["temp_valid"] = torch.tensor(1.0 if has_temp else 0.0, dtype=torch.float32)
             mask = None
             if "face_mask_path" in row and pd.notna(row["face_mask_path"]):
-                mask = load_mask(row["face_mask_path"])
+                mask = load_mask(row["face_mask_path"], stride=self.frame_stride)
             if mask is None:
-                mask = torch.ones((self.clip_frames, 1, self.input_size, self.input_size), dtype=torch.float32)
+                mask = torch.ones((self.T_out, 1, self.input_size, self.input_size), dtype=torch.float32)
             else:
                 mask = self._fix_clip_len(mask)
                 mask = self._resize(mask, mode="nearest")

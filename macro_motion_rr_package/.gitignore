@@ -1,0 +1,20 @@
+# Python virtual environments
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# pytest
+.pytest_cache/
+
+# Training outputs / checkpoints (large; regenerate, don't commit)
+runs/
+*.pt
+*.pth
+
+# Synthetic / generated data used for smoke tests
+data/synthetic/
+data/metadata.csv
+data/metadata_split.csv
+*.npy
+*.npz
